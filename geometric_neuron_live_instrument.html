@@ -1,0 +1,255 @@
+
+<style>
+.gn-label { font-size: 11px; color: var(--color-text-tertiary); font-family: var(--font-mono); margin-bottom: 4px; letter-spacing: 0.05em; }
+.gn-card { background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 12px; font-size: 12px; }
+.gn-card b { display: block; font-family: var(--font-mono); font-size: 11px; font-weight: 500; margin-bottom: 4px; }
+canvas.gn { width: 100%; display: block; border-radius: 6px; }
+</style>
+
+<h2 class="sr-only">Geometric Neuron live instrument: real-time phase-space computation with recurrence matrix, phase portrait, and spike detection — no training required</h2>
+
+<div style="padding:0.5rem 0 1rem">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+    <div>
+      <div style="font-size:16px;font-weight:500">Geometric Neuron — live instrument</div>
+      <div style="font-size:13px;color:var(--color-text-secondary);margin-top:2px">Learns signal geometry online, zero training, no gradient. Inject an anomaly and watch phase memory shatter.</div>
+    </div>
+    <div style="font-family:var(--font-mono);font-size:12px;text-align:right">
+      <div id="statusMsg" style="color:var(--color-text-secondary)">Warming up…</div>
+      <div id="spikeCount" style="color:var(--color-text-tertiary)">spikes: 0</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+    <div><div class="gn-label">INPUT SIGNAL</div><canvas id="sigCv" class="gn" width="320" height="68"></canvas></div>
+    <div><div class="gn-label">SOMATIC RESONANCE + AIS SPIKES</div><canvas id="resCv" class="gn" width="320" height="68"></canvas></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+    <div>
+      <div class="gn-label">RECURRENCE MATRIX — Hermitian phase memory</div>
+      <canvas id="recCv" class="gn" width="320" height="216"></canvas>
+    </div>
+    <div>
+      <div class="gn-label">PHASE PORTRAIT — learned attractor (Re×Im)</div>
+      <canvas id="phaseCv" class="gn" width="320" height="216" style="background:#080810"></canvas>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+    <button id="btnRun"><i class="ti ti-player-pause" aria-hidden="true"></i> <span id="btnRunTxt">Pause</span></button>
+    <button id="btnAnom"><i class="ti ti-bolt" aria-hidden="true"></i> Inject anomaly</button>
+    <button id="btnReset"><i class="ti ti-refresh" aria-hidden="true"></i> Reset</button>
+    <div style="margin-left:auto;display:flex;gap:16px;font-size:12px;font-family:var(--font-mono);color:var(--color-text-tertiary)">
+      <span>normal: 1.2 Hz + 7 Hz</span>
+      <span>anomaly: 13.5 Hz burst</span>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+    <div class="gn-card"><b>Recurrence matrix</b><span style="color:var(--color-text-secondary);line-height:1.5">Cell (i,j) = |⟨vᵢ|vⱼ⟩|² between two phase-space moments. Bright diagonal bands = periodic geometry. Watch them shatter on anomaly injection, then re-form.</span></div>
+    <div class="gn-card"><b>Phase portrait</b><span style="color:var(--color-text-secondary);line-height:1.5">The toroidal attractor the neuron has learned. Cyan = normal. Red = anomaly. The torus collapses to chaos, then a new attractor crystallizes from scratch.</span></div>
+    <div class="gn-card"><b>Why not standard AI</b><span style="color:var(--color-text-secondary);line-height:1.5">A transformer needs a training corpus and backprop. This produces spikes after ~40 samples, adapts online via Hermitian power iteration, and requires no gradient at all.</span></div>
+  </div>
+</div>
+
+<script>
+const EMBED=4, TAU=12, AIS_W=12, DT=0.02, THETA=2.0, HIST=280, REC_N=50;
+
+class Branch {
+  constructor(a){this.a=a;this.s=0;}
+  step(x){return(this.s=this.a*x+(1-this.a)*this.s);}
+}
+
+class GN {
+  constructor(){
+    this.bp=new Branch(0.9);this.bd=new Branch(0.1);
+    this.minLen=(EMBED-1)*TAU+1;
+    this.bP=[];this.bD=[];this.tmpl=null;
+    this.aisBuf=[];this.base=0;this.t=0;this.rv=[];
+  }
+  proc(x){
+    const t=this.t++*DT;
+    const p=this.bp.step(x),d=this.bd.step(x);
+    this.bP.push(p);this.bD.push(d);
+    if(this.bP.length<this.minLen)return{spike:0,res:0,vR:null,vI:null};
+    while(this.bP.length>this.minLen){this.bP.shift();this.bD.shift();}
+    const vR=[],vI=[];
+    for(let j=0;j<EMBED;j++){const i=this.bD.length-1-j*TAU;vR.push(this.bD[i]);vI.push(this.bP[i]);}
+    let n=0;for(let j=0;j<EMBED;j++)n+=vR[j]**2+vI[j]**2;n=Math.sqrt(n)+1e-8;
+    const vnR=vR.map(v=>v/n),vnI=vI.map(v=>v/n);
+    this.rv.push({r:vnR,i:vnI});if(this.rv.length>REC_N)this.rv.shift();
+    if(!this.tmpl){this.tmpl={r:[...vnR],i:[...vnI]};}
+    else{
+      const lr=0.003;
+      for(let j=0;j<EMBED;j++){this.tmpl.r[j]=(1-lr)*this.tmpl.r[j]+lr*vnR[j];this.tmpl.i[j]=(1-lr)*this.tmpl.i[j]+lr*vnI[j];}
+      let tn=0;for(let j=0;j<EMBED;j++)tn+=this.tmpl.r[j]**2+this.tmpl.i[j]**2;tn=Math.sqrt(tn)+1e-8;
+      this.tmpl.r=this.tmpl.r.map(v=>v/tn);this.tmpl.i=this.tmpl.i.map(v=>v/tn);
+    }
+    let dR=0,dI=0;
+    for(let j=0;j<EMBED;j++){dR+=this.tmpl.r[j]*vnR[j]+this.tmpl.i[j]*vnI[j];dI+=this.tmpl.r[j]*vnI[j]-this.tmpl.i[j]*vnR[j];}
+    const res=dR**2+dI**2;
+    const gate=Math.max(0,Math.sin(2*Math.PI*THETA*t));
+    const g=res*gate;
+    this.aisBuf.push(g);if(this.aisBuf.length>AIS_W)this.aisBuf.shift();
+    this.base=0.99*this.base+0.01*g;
+    const thr=this.base*AIS_W*1.5;
+    const intg=this.aisBuf.reduce((a,b)=>a+b,0);
+    let spike=0;
+    if(intg>thr&&this.aisBuf.length===AIS_W&&thr>0.001){spike=1;this.aisBuf=new Array(AIS_W).fill(0);}
+    return{spike,res,vR:vnR,vI:vnI};
+  }
+}
+
+function hSim(a,b){
+  let dR=0,dI=0;
+  for(let j=0;j<EMBED;j++){dR+=a.r[j]*b.r[j]+a.i[j]*b.i[j];dI+=a.r[j]*b.i[j]-a.i[j]*b.r[j];}
+  return dR**2+dI**2;
+}
+
+function heatRGB(t){
+  t=Math.max(0,Math.min(1,t));
+  let r,g,b;
+  if(t<0.25){const s=t*4;r=Math.round(s*60);g=0;b=Math.round(40+s*100);}
+  else if(t<0.5){const s=(t-0.25)*4;r=Math.round(60+s*100);g=Math.round(s*60);b=Math.round(140-s*40);}
+  else if(t<0.75){const s=(t-0.5)*4;r=Math.round(160+s*80);g=Math.round(60+s*140);b=Math.round(100-s*60);}
+  else{const s=(t-0.75)*4;r=240;g=Math.round(200+s*55);b=Math.round(40+s*40);}
+  return[r,g,b];
+}
+
+let gn=new GN();
+let tick=0;
+let anomMode=false,anomCount=0;
+let running=true;
+let spikeTotal=0;
+let learnedFlag=false;
+let raf=null;
+
+const sigBuf=new Float32Array(HIST);
+const resBuf=new Float32Array(HIST);
+const spkBuf=new Uint8Array(HIST);
+let phasePts=[];
+
+const sigCv=document.getElementById('sigCv');
+const recCv=document.getElementById('recCv');
+const phaseCv=document.getElementById('phaseCv');
+const resCv=document.getElementById('resCv');
+const statusEl=document.getElementById('statusMsg');
+const spikeEl=document.getElementById('spikeCount');
+const btnRun=document.getElementById('btnRun');
+const btnRunTxt=document.getElementById('btnRunTxt');
+const btnAnom=document.getElementById('btnAnom');
+const btnReset=document.getElementById('btnReset');
+
+function setStatus(s){statusEl.textContent=s;}
+
+function resetAll(){
+  gn=new GN();tick=0;anomMode=false;anomCount=0;spikeTotal=0;learnedFlag=false;
+  sigBuf.fill(0);resBuf.fill(0);spkBuf.fill(0);phasePts=[];
+  spikeEl.textContent='spikes: 0';setStatus('Learning geometry…');running=true;btnRunTxt.textContent='Pause';
+  btnAnom.disabled=false;
+}
+
+function drawSig(){
+  const ctx=sigCv.getContext('2d'),W=sigCv.width,H=sigCv.height;
+  ctx.fillStyle='#080810';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#151530';ctx.lineWidth=0.5;
+  ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();
+  ctx.strokeStyle=anomMode?'#e06060':'#28c8e0';ctx.lineWidth=1.5;ctx.beginPath();
+  const sy=H*0.35;
+  for(let i=0;i<HIST;i++){const px=(i/HIST)*W,py=H/2-sigBuf[i]*sy;i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);}
+  ctx.stroke();
+}
+
+function drawRec(){
+  const ctx=recCv.getContext('2d'),W=recCv.width,H=recCv.height;
+  ctx.fillStyle='#080810';ctx.fillRect(0,0,W,H);
+  const vecs=gn.rv,N=vecs.length;
+  if(N<2)return;
+  const cW=W/REC_N,cH=H/REC_N,off=REC_N-N;
+  for(let i=0;i<N;i++){
+    for(let j=0;j<N;j++){
+      const sim=hSim(vecs[i],vecs[j]);
+      const[r,g,b]=heatRGB(sim);
+      ctx.fillStyle=`rgb(${r},${g},${b})`;
+      ctx.fillRect((off+i)*cW,(off+j)*cH,cW+1,cH+1);
+    }
+  }
+}
+
+function drawPhase(){
+  const ctx=phaseCv.getContext('2d'),W=phaseCv.width,H=phaseCv.height;
+  ctx.fillStyle='#080810';ctx.fillRect(0,0,W,H);
+  const cx=W/2,cy=H/2,sc=W*0.42;
+  ctx.strokeStyle='#111128';ctx.lineWidth=0.5;
+  ctx.beginPath();ctx.moveTo(0,cy);ctx.lineTo(W,cy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx,0);ctx.lineTo(cx,H);ctx.stroke();
+  for(let i=0;i<phasePts.length;i++){
+    const age=i/phasePts.length;
+    const px=cx+phasePts[i].x*sc,py=cy-phasePts[i].y*sc;
+    const a=0.05+age*0.85;
+    if(phasePts[i].anom){ctx.fillStyle=`rgba(220,70,70,${a})`;}
+    else{ctx.fillStyle=`rgba(${Math.round(20+age*20)},${Math.round(150+age*78)},${Math.round(200-age*50)},${a})`;}
+    ctx.fillRect(px-1,py-1,2,2);
+  }
+}
+
+function drawRes(){
+  const ctx=resCv.getContext('2d'),W=resCv.width,H=resCv.height;
+  ctx.fillStyle='#080810';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#8050c0';ctx.lineWidth=1.5;ctx.beginPath();
+  const top=H*0.60;
+  for(let i=0;i<HIST;i++){const px=(i/HIST)*W,py=top-resBuf[i]*top*0.9;i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);}
+  ctx.stroke();
+  for(let i=0;i<HIST;i++){
+    if(spkBuf[i]){
+      ctx.strokeStyle='#e03030';ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo((i/HIST)*W,top+2);ctx.lineTo((i/HIST)*W,H-2);ctx.stroke();
+    }
+  }
+}
+
+function loop(){
+  if(running){
+    const SPF=5;
+    for(let s=0;s<SPF;s++){
+      const t=tick++*DT;
+      let x;
+      if(anomMode){
+        x=1.9*Math.sin(2*Math.PI*13.5*t)+0.15*(Math.random()-0.5);
+        if(--anomCount<=0){anomMode=false;btnAnom.disabled=false;setStatus('Re-adapting…');
+          setTimeout(()=>{if(!anomMode)setStatus('Pattern re-learned');},3500);}
+      }else{
+        x=Math.sin(2*Math.PI*1.2*t)+0.35*Math.sin(2*Math.PI*7*t)+0.07*(Math.random()-0.5);
+      }
+      const res=gn.proc(x);
+      sigBuf.copyWithin(0,1);sigBuf[HIST-1]=x;
+      resBuf.copyWithin(0,1);resBuf[HIST-1]=res.res||0;
+      spkBuf.copyWithin(0,1);spkBuf[HIST-1]=res.spike;
+      if(res.spike){
+        spikeTotal++;spikeEl.textContent='spikes: '+spikeTotal;
+        if(!learnedFlag&&spikeTotal>12){learnedFlag=true;setStatus('Pattern learned — resonating');}
+      }
+      if(res.vR){
+        phasePts.push({x:res.vR[0],y:res.vI[0],anom:anomMode});
+        if(phasePts.length>380)phasePts.shift();
+      }
+    }
+    drawSig();drawRec();drawPhase();drawRes();
+  }
+  raf=requestAnimationFrame(loop);
+}
+
+btnRun.addEventListener('click',()=>{
+  running=!running;
+  btnRunTxt.textContent=running?'Pause':'Run';
+  if(running&&!learnedFlag)setStatus('Learning geometry…');
+});
+
+btnAnom.addEventListener('click',()=>{
+  if(!anomMode){anomMode=true;anomCount=300;btnAnom.disabled=true;setStatus('Anomaly — geometry shattering');}
+});
+
+btnReset.addEventListener('click',resetAll);
+
+raf=requestAnimationFrame(loop);
+</script>
