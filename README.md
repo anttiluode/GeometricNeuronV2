@@ -1,5 +1,7 @@
 # **The Geometric Neuron (v2)**
 
+Html demo: https://anttiluode.github.io/GeometricNeuronV2/ 
+
 ![gn](gn.png)
 
 **Phase-Space Computation, Recurrence Resonance, and the Death of the McCulloch-Pitts Approximation**
