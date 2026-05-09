@@ -1,5 +1,7 @@
 # **The Geometric Neuron (v2)**
 
+![gn](gn.png)
+
 **Phase-Space Computation, Recurrence Resonance, and the Death of the McCulloch-Pitts Approximation**
 
 **Antti Luode — PerceptionLab**
